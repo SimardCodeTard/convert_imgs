@@ -1,5 +1,5 @@
 ﻿# ==============================
-# Image converter to png with ffmpeg
+# Image converter to PNG with FFmpeg (parallel)
 # ==============================
 param(
     [Parameter(Mandatory = $true)]
@@ -9,31 +9,29 @@ param(
 $extensions = @("*.heic", "*.jpg", "*.jpeg", "*.webp")
 $ffmpegPath = "ffmpeg"
 
-Write-Host "=== Convertisseur d'images vers PNG ===" -ForegroundColor Cyan
-Write-Host "Dossier racine : $root"
+Write-Host "=== Image Converter to PNG ===" -ForegroundColor Cyan
+Write-Host "Root folder: $root"
 Write-Host ""
 
 # --- Folder validation ---
 if (-not (Test-Path $root)) {
-    Write-Host "❌ Le dossier spécifié n'existe pas : $root" -ForegroundColor Red
+    Write-Host "❌ The specified folder does not exist: $root" -ForegroundColor Red
     exit 1
 }
 
-# --- Counts all files by type ---
+# --- Function to count files by type ---
 function Get-FileCounts($path, $exts) {
     $counts = @{}
-    # count by type
     foreach ($ext in $exts + "*.png") {
         $name = $ext.Replace("*.", "").ToUpper()
         $counts[$name] = (Get-ChildItem -Path $path -Recurse -Include $ext -File -ErrorAction SilentlyContinue).Count
     }
-    # total count of files
     $counts["TOTAL"] = (Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue).Count
     return $counts
 }
 
 # --- Count before ---
-Write-Host "📊 Décompte AVANT conversion :"
+Write-Host "📊 File count BEFORE conversion:"
 $before = Get-FileCounts $root $extensions
 $order = @("HEIC","JPG","JPEG","WEBP","PNG","TOTAL")
 foreach ($key in $order) {
@@ -44,65 +42,65 @@ foreach ($key in $order) {
 Write-Host ""
 
 # --- Ask for dry run ---
-$choice = Read-Host "Souhaitez-vous lancer une simulation avant la conversion ? (O/N)"
+$choice = Read-Host "Do you want to perform a dry-run before conversion? (Y/N)"
 $dryRun = $false
-if ($choice -match '^[OoYy]') {
+if ($choice -match '^[Yy]') {
     $dryRun = $true
-    Write-Host "`n🧪 Mode simulation activé : aucune modification ne sera faite." -ForegroundColor Yellow
+    Write-Host "`n🧪 Dry-run mode enabled: no files will be modified." -ForegroundColor Yellow
 } else {
-    Write-Host "`nMode réel : les fichiers originaux seront supprimés après conversion." -ForegroundColor Red
+    Write-Host "`nReal mode: original files will be deleted after conversion." -ForegroundColor Red
 }
 
 # --- User confirmation ---
-$confirm = Read-Host "`nVoulez-vous continuer ? (O/N)"
-if ($confirm -notmatch '^[OoYy]') {
-    Write-Host "❌ Opération annulée par l'utilisateur."
+$confirm = Read-Host "`nDo you want to continue? (Y/N)"
+if ($confirm -notmatch '^[Yy]') {
+    Write-Host "❌ Operation canceled by user."
     exit
 }
 
 # --- Get all the files to convert ---
 $files = Get-ChildItem -Path $root -Recurse -Include $extensions -File
 $total = $files.Count
-$count = 0
 
 if ($total -eq 0) {
-    Write-Host "Aucun fichier à convertir." -ForegroundColor Yellow
+    Write-Host "No files to convert." -ForegroundColor Yellow
     exit
 }
 
-# --- Convertoon ---
-foreach ($file in $files) {
-    $count++
-    $output = [System.IO.Path]::ChangeExtension($file.FullName, ".png")
+Write-Host "`nStarting conversion of $total files..." -ForegroundColor Cyan
 
-    # Ignore if png already exists
-    if (Test-Path $output) {
-        Write-Host ("[{0,5:P1}] (IGNORÉ) {1}" -f ($count / $total), $file.Name) -ForegroundColor DarkYellow
-        continue
+# --- Parallel conversion ---
+$files | ForEach-Object -Parallel {
+    $inputPath = $_.FullName
+    $outputPath = [System.IO.Path]::ChangeExtension($inputPath, ".png")
+
+    # Access outer variables with $using:
+    $ffmpegPathLocal = $using:ffmpegPath
+    $dryRunLocal = $using:dryRun
+
+    if (Test-Path $outputPath) {
+        Write-Host ("[{0}] (SKIPPED) {1}" -f (Get-Date -Format "HH:mm:ss"), $_.Name) -ForegroundColor DarkYellow
+        return
     }
 
-    if ($dryRun) {
-        Write-Host ("[{0,5:P1}] Simulation : {1} -> {2}" -f ($count / $total), $file.Name, $output)
-        continue
+    if ($dryRunLocal) {
+        Write-Host ("[{0}] Dry-run: {1} -> {2}" -f (Get-Date -Format "HH:mm:ss"), $_.Name, $outputPath)
+        return
     }
 
-    # Silent convertion with ffmpeg
-	$inputPath = $file.FullName
-	$outputPath = $output
-	& $ffmpegPath -hide_banner -loglevel error -y -i "$inputPath" "$outputPath"
+    & $ffmpegPathLocal -hide_banner -loglevel error -y -i "$inputPath" "$outputPath"
 
-    # Success verification
-	if (Test-Path $outputPath) {
-		Write-Host ("    ✅ Conversion réussie : {0}" -f $file.Name) -ForegroundColor Green
-		if (-not $dryRun) { Remove-Item $inputPath -Force }
-	} else {
-		Write-Host ("    ⚠️ Échec de la conversion : {0}" -f $file.Name) -ForegroundColor Red
-	}
-}
+    if (Test-Path $outputPath) {
+        Write-Host ("[{0}] ✅ Converted: {1}" -f (Get-Date -Format "HH:mm:ss"), $_.Name) -ForegroundColor Green
+        Remove-Item $inputPath -Force
+    } else {
+        Write-Host ("[{0}] ⚠️ Failed: {1}" -f (Get-Date -Format "HH:mm:ss"), $_.Name) -ForegroundColor Red
+    }
+
+} -ThrottleLimit 15
 
 # --- Count after ---
-Write-Host ""
-Write-Host "📊 Décompte APRÈS conversion :"
+Write-Host "`n📊 File count AFTER conversion:"
 $after = Get-FileCounts $root $extensions
 foreach ($key in $order) {
     if ($after.ContainsKey($key)) {
@@ -112,7 +110,7 @@ foreach ($key in $order) {
 Write-Host ""
 
 if ($dryRun) {
-    Write-Host "✅ Simulation terminée — aucun fichier n'a été modifié." -ForegroundColor Green
+    Write-Host "✅ Dry-run completed — no files were modified." -ForegroundColor Green
 } else {
-    Write-Host "✅ Conversion terminée !" -ForegroundColor Green
+    Write-Host "✅ Conversion completed!" -ForegroundColor Green
 }
